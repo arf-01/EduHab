@@ -129,6 +129,4 @@ The application is deployed and accessible at:
 
 ---
 
-## License
 
-This project is open-source software licensed under the [MIT License](LICENSE).
