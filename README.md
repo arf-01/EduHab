@@ -7,7 +7,7 @@
 
 **EduHub** is an online examination and quiz management system designed for instructors and students. It combines interactive classroom quizzes with practical exam integrity and connection resilience.
 
-🌐 **Live Demo:** [https://20.219.22.23.nip.io/](https://20.219.22.23.nip.io/)
+🌐 **Live Demo:** [https://quizportal.me/](https://quizportal.me/)
 
 ---
 
@@ -125,7 +125,7 @@ Ensure you have the following installed on your machine:
 ## Live Deployment
 
 The application is deployed and accessible at:  
-👉 **[https://20.219.22.23.nip.io/](https://20.219.22.23.nip.io/)**
+👉 **[https://quizportal.me/](https://quizportal.me/)**
 
 ---
 
