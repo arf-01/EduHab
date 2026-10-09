@@ -166,6 +166,9 @@ jobs:
             echo "==> Rebuilding application services..."
             docker compose -f docker-compose.production.yml up -d --remove-orphans
 
+            echo "==> Refreshing Nginx upstream..."
+            docker compose -f docker-compose.production.yml up -d --force-recreate nginx
+
             echo "==> Linking public storage..."
             docker compose -f docker-compose.production.yml exec -T app \
               php artisan storage:link
