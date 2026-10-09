@@ -1,10 +1,14 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte';
-    import { db, type Question, type Quiz, type Answer } from './db';
+    import { createSessionId, db, makeRecordId, type Question, type Quiz } from './db';
     import { submitQuiz } from './api';
     import { parseContentWithCode, highlightCodeSyntax, formatInlineCode } from './CodeHighlighter';
 
-    let { quizId, studentId, isOnline, onComplete, onOfflineSubmit, onQuizEnded } = $props<{ 
+    let { sessionId, tabId, attemptId, attemptToken, quizId, studentId, isOnline, onComplete, onOfflineSubmit, onQuizEnded } = $props<{
+        sessionId: string,
+        tabId: string,
+        attemptId: number,
+        attemptToken: string,
         quizId: number, 
         studentId: string,
         isOnline: boolean,
@@ -24,15 +28,15 @@
     let timerInterval: number;
 
     onMount(async () => {
-        quiz = await db.quizzes.get(quizId) || null;
-        questions = await db.questions.where('quizId').equals(quizId).toArray();
+        quiz = await db.sessionQuizzes.get(sessionId) || null;
+        questions = await db.sessionQuestions.where('sessionId').equals(sessionId).toArray();
         
         if (!quiz || questions.length === 0) {
             console.error("Quiz data not found in local DB.");
             return;
         }
 
-        const savedState = await db.quizState.where('quizId').equals(quizId).first();
+        const savedState = await db.quizStates.where('sessionId').equals(sessionId).first();
         if (savedState && savedState.studentId === studentId && (savedState.remainingTime > 0 || savedState.questionEndTime)) {
             const now = Date.now();
             let qIndex = savedState.currentQuestionId;
@@ -66,28 +70,12 @@
         await loadAnswerForCurrentQuestion();
         await saveState();
 
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-        window.addEventListener('focus', handleVisibilityChange);
-
         startTimer();
     });
 
     onDestroy(() => {
         clearInterval(timerInterval);
-        document.removeEventListener('visibilitychange', handleVisibilityChange);
-        window.removeEventListener('focus', handleVisibilityChange);
     });
-
-    function handleVisibilityChange() {
-        if (!questionEndTime) return;
-        const now = Date.now();
-        remainingTime = Math.max(0, Math.ceil((questionEndTime - now) / 1000));
-        saveState();
-
-        if (remainingTime <= 0) {
-            handleTimeExpiry();
-        }
-    }
 
     function startTimer() {
         clearInterval(timerInterval);
@@ -112,6 +100,7 @@
 
     async function saveState() {
         const stateToSave = {
+            sessionId,
             studentId,
             quizId,
             currentQuestionId: currentQuestionIndex,
@@ -120,18 +109,19 @@
             lastSaved: new Date().toISOString()
         };
 
-        const existing = await db.quizState.where('quizId').equals(quizId).first();
+        const existing = await db.quizStates.where('sessionId').equals(sessionId).first();
         if (existing) {
-            await db.quizState.update(existing.id!, stateToSave);
+            await db.quizStates.update(existing.id!, stateToSave);
         } else {
-            await db.quizState.add(stateToSave);
+            await db.quizStates.add(stateToSave);
         }
+        await db.quizSessions.update(sessionId, { lastSaved: stateToSave.lastSaved });
     }
 
     async function loadAnswerForCurrentQuestion() {
         if (questions.length === 0) return;
         const currentQ = questions[currentQuestionIndex];
-        const savedAnswer = await db.answers.get(currentQ.id);
+        const savedAnswer = await db.sessionAnswers.get(makeRecordId(sessionId, currentQ.questionId));
         selectedOption = savedAnswer ? savedAnswer.selectedOption : null;
     }
 
@@ -139,8 +129,11 @@
         selectedOption = optionNum;
         const currentQ = questions[currentQuestionIndex];
         
-        await db.answers.put({
-            questionId: currentQ.id,
+        await db.sessionAnswers.put({
+            id: makeRecordId(sessionId, currentQ.questionId),
+            sessionId,
+            quizId,
+            questionId: currentQ.questionId,
             selectedOption: optionNum,
             answeredAt: new Date().toISOString()
         });
@@ -166,30 +159,39 @@
         clearInterval(timerInterval);
         
         try {
-            const allSavedAnswers = await db.answers.toArray();
+            const allSavedAnswers = await db.sessionAnswers.where('sessionId').equals(sessionId).toArray();
             
             const payloadAnswers = allSavedAnswers.map(a => ({
                 questionId: a.questionId,
-                selectedOption: a.selectedOption
+                selectedOption: a.selectedOption,
+                answeredAt: a.answeredAt
             }));
+            const submissionId = createSessionId();
 
             let submittedOnline = false;
 
             if (isOnline && navigator.onLine) {
                 try {
-                    const response = await submitQuiz(quizId, studentId, payloadAnswers);
-                    await db.quizState.where('quizId').equals(quizId).delete();
-                    await db.answers.clear();
-                    await db.questions.where('quizId').equals(quizId).delete();
-                    await db.quizzes.delete(quizId);
+                    const response = await submitQuiz(quizId, studentId, payloadAnswers, {
+                        submissionId,
+                        sessionId,
+                        attemptId,
+                        attemptToken
+                    });
+                    await db.quizStates.where('sessionId').equals(sessionId).delete();
+                    await db.sessionAnswers.where('sessionId').equals(sessionId).delete();
+                    await db.sessionQuestions.where('sessionId').equals(sessionId).delete();
+                    await db.sessionQuizzes.delete(sessionId);
+                    await db.quizSessions.delete(sessionId);
                     onComplete(response.score, response.total);
                     submittedOnline = true;
                 } catch (netError: any) {
                     if (netError?.quizEnded) {
-                        await db.quizState.where('quizId').equals(quizId).delete();
-                        await db.answers.clear();
-                        await db.questions.where('quizId').equals(quizId).delete();
-                        await db.quizzes.delete(quizId);
+                        await db.quizStates.where('sessionId').equals(sessionId).delete();
+                        await db.sessionAnswers.where('sessionId').equals(sessionId).delete();
+                        await db.sessionQuestions.where('sessionId').equals(sessionId).delete();
+                        await db.sessionQuizzes.delete(sessionId);
+                        await db.quizSessions.delete(sessionId);
                         onQuizEnded(netError.message || 'This quiz has already ended. Submissions are no longer accepted.');
                         return;
                     }
@@ -199,14 +201,20 @@
 
             if (!submittedOnline) {
                 await db.pendingSubmissions.add({
+                    submissionId,
+                    sessionId,
+                    tabId,
                     studentId,
                     quizId,
+                    attemptId,
+                    attemptToken,
                     answers: payloadAnswers,
                     createdAt: new Date().toISOString(),
+                    attemptCount: 0,
                     synced: 0
                 });
                 
-                await db.quizState.where('quizId').equals(quizId).delete();
+                await db.quizStates.where('sessionId').equals(sessionId).delete();
                 onOfflineSubmit();
             }
         } catch (error: any) {
@@ -239,8 +247,8 @@
             type="button" 
             onclick={async () => {
                 try {
-                    await db.quizState.clear();
-                    await db.answers.clear();
+                    await db.quizStates.where('sessionId').equals(sessionId).delete();
+                    await db.sessionAnswers.where('sessionId').equals(sessionId).delete();
                 } catch (e) {}
                 window.location.reload();
             }}

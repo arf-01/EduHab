@@ -463,23 +463,6 @@
         window.onbeforeunload = null;
     });
 
-    // Tab-switch detection
-    document.addEventListener('visibilitychange', () => {
-        if (!quizStarted) return;
-        fetch('/report-tab-switch', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
-            },
-            body: JSON.stringify({
-                student_id: {{ session('student_id') }},
-                quiz_id: quizId,
-                state: document.hidden ? 'hidden' : 'visible',
-                time: new Date().toISOString()
-            })
-        }).catch(() => {});
-    });
 })();
 </script>
 </body>

@@ -4,10 +4,12 @@ namespace Tests\Feature;
 
 use App\Models\Question;
 use App\Models\Quiz;
+use App\Models\QuizAttempt;
 use App\Models\Result;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class QuizApiIntegrationTest extends TestCase
@@ -161,6 +163,7 @@ class QuizApiIntegrationTest extends TestCase
         $quiz = Quiz::factory()->create([
             'userid' => $teacher->id,
             'duration' => 300,
+            'start_datetime' => Carbon::now()->subMinute(),
         ]);
 
         $q1 = Question::factory()->create([
@@ -174,10 +177,14 @@ class QuizApiIntegrationTest extends TestCase
         ]);
 
         $studentId = 'STU500';
+        $attempt = $this->createActiveAttempt($quiz, $studentId);
 
         $response = $this->postJson('/api/quiz/submit', [
             'quiz_id' => $quiz->id,
             'student_id' => $studentId,
+            'attempt_id' => $attempt->id,
+            'attempt_token' => $attempt->attempt_token,
+            'submission_id' => (string) Str::uuid(),
             'answers' => [
                 ['questionId' => $q1->id, 'selectedOption' => 2], // correct
                 ['questionId' => $q2->id, 'selectedOption' => 1], // incorrect
@@ -221,6 +228,7 @@ class QuizApiIntegrationTest extends TestCase
         $q = Question::factory()->create(['quiz_id' => $quiz->id, 'right_option' => '1']);
 
         $studentId = 'STU600';
+        $attempt = $this->createActiveAttempt($quiz, $studentId);
         Result::create([
             'quiz_id' => $quiz->id,
             'student_id' => $studentId,
@@ -230,6 +238,9 @@ class QuizApiIntegrationTest extends TestCase
         $response = $this->postJson('/api/quiz/submit', [
             'quiz_id' => $quiz->id,
             'student_id' => $studentId,
+            'attempt_id' => $attempt->id,
+            'attempt_token' => $attempt->attempt_token,
+            'submission_id' => (string) Str::uuid(),
             'answers' => [
                 ['questionId' => $q->id, 'selectedOption' => 1],
             ],
@@ -253,10 +264,14 @@ class QuizApiIntegrationTest extends TestCase
 
         $q = Question::factory()->create(['quiz_id' => $quiz->id, 'right_option' => '1']);
         $studentId = 'STU700';
+        $attempt = $this->createActiveAttempt($quiz, $studentId);
 
         $response = $this->postJson('/api/quiz/submit', [
             'quiz_id' => $quiz->id,
             'student_id' => $studentId,
+            'attempt_id' => $attempt->id,
+            'attempt_token' => $attempt->attempt_token,
+            'submission_id' => (string) Str::uuid(),
             'answers' => [
                 ['questionId' => $q->id, 'selectedOption' => 1],
             ],
@@ -284,10 +299,14 @@ class QuizApiIntegrationTest extends TestCase
 
         $q = Question::factory()->create(['quiz_id' => $quiz->id, 'right_option' => '1']);
         $studentId = 'STU800';
+        $attempt = $this->createActiveAttempt($quiz, $studentId);
 
         $response = $this->postJson('/api/quiz/submit', [
             'quiz_id' => $quiz->id,
             'student_id' => $studentId,
+            'attempt_id' => $attempt->id,
+            'attempt_token' => $attempt->attempt_token,
+            'submission_id' => (string) Str::uuid(),
             'answers' => [
                 ['questionId' => $q->id, 'selectedOption' => 1],
             ],
@@ -326,9 +345,13 @@ class QuizApiIntegrationTest extends TestCase
 
         // 2. Student submission while ended is rejected
         $studentId = 'STU900';
+        $attempt = $this->createActiveAttempt($quiz, $studentId);
         $submitResponse1 = $this->postJson('/api/quiz/submit', [
             'quiz_id' => $quiz->id,
             'student_id' => $studentId,
+            'attempt_id' => $attempt->id,
+            'attempt_token' => $attempt->attempt_token,
+            'submission_id' => (string) Str::uuid(),
             'answers' => [
                 ['questionId' => $q->id, 'selectedOption' => 2],
             ],
@@ -347,6 +370,9 @@ class QuizApiIntegrationTest extends TestCase
         $submitResponse2 = $this->postJson('/api/quiz/submit', [
             'quiz_id' => $quiz->id,
             'student_id' => $studentId,
+            'attempt_id' => $attempt->id,
+            'attempt_token' => $attempt->attempt_token,
+            'submission_id' => (string) Str::uuid(),
             'answers' => [
                 ['questionId' => $q->id, 'selectedOption' => 2],
             ],
@@ -356,6 +382,22 @@ class QuizApiIntegrationTest extends TestCase
             'message' => 'Quiz submitted successfully!',
             'score' => 1,
             'total' => 1,
+        ]);
+    }
+
+    private function createActiveAttempt(Quiz $quiz, string $studentId): QuizAttempt
+    {
+        $now = Carbon::now();
+
+        return QuizAttempt::create([
+            'student_id' => $studentId,
+            'quiz_id' => $quiz->id,
+            'status' => 'active',
+            'active_key' => "{$studentId}:{$quiz->id}",
+            'attempt_token' => Str::random(64),
+            'started_at' => $now,
+            'expires_at' => $now->copy()->addHour(),
+            'last_seen_at' => $now,
         ]);
     }
 }

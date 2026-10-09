@@ -92,12 +92,26 @@ export class QuizApiError extends Error {
     }
 }
 
-export const submitQuiz = async (quizId: number, studentId: string, answers: any[]) => {
+export const submitQuiz = async (
+    quizId: number,
+    studentId: string,
+    answers: any[],
+    metadata: {
+        submissionId?: string;
+        sessionId?: string;
+        attemptId?: number;
+        attemptToken?: string;
+    } = {}
+) => {
     try {
         const response = await apiClient.post('/api/quiz/submit', {
             quiz_id: quizId,
             student_id: studentId,
-            answers: answers
+            answers: answers,
+            submission_id: metadata.submissionId,
+            session_id: metadata.sessionId,
+            attempt_id: metadata.attemptId,
+            attempt_token: metadata.attemptToken
         });
         return response.data;
     } catch (error: any) {
@@ -112,4 +126,3 @@ export const submitQuiz = async (quizId: number, studentId: string, answers: any
         throw new QuizApiError(msg, statusCode, isEnded, data?.status, data);
     }
 };
-

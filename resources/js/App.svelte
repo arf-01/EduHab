@@ -3,10 +3,11 @@
     import Login from './Login.svelte';
     import RoomLobby from './RoomLobby.svelte';
     import Quiz from './Quiz.svelte';
-    import { db } from './db';
+    import { cleanupAbandonedSessions, clearSessionLocalData, createSessionId, db, getTabId } from './db';
     import { submitQuiz, startQuiz, checkRealOnlineStatus } from './api';
 
-    let loading = $state(true);
+    // Show the room form immediately; recovery and connectivity checks run in the background.
+    let loading = $state(false);
     let initError = $state('');
     let isOnline = $state(navigator.onLine);
     
@@ -14,12 +15,16 @@
     let currentRoomName = $state<string | null>(null);
     let studentId = $state<string | null>(null);
     let activeQuizId = $state<number | null>(null);
+    let activeSessionId = $state<string | null>(null);
+    let activeAttemptId = $state<number | null>(null);
+    let activeAttemptToken = $state<string | null>(null);
     let quizScore = $state<number | null>(null);
     let quizTotal = $state<number | null>(null);
     let hasPendingSubmission = $state(false);
     let quizEndedNotice = $state<{ message: string } | null>(null);
 
     let networkCheckInterval: number;
+    const tabId = getTabId();
 
     function shuffleArray<T>(array: T[]): T[] {
         const arr = [...array];
@@ -30,20 +35,16 @@
         return arr;
     }
 
-    async function clearQuizLocalData(quizId?: number | null) {
+    async function clearQuizLocalData(sessionId?: string | null, removePending = true) {
         try {
-            if (quizId) {
-                await db.pendingSubmissions.where('quizId').equals(quizId).delete();
-                await db.quizState.where('quizId').equals(quizId).delete();
-                await db.questions.where('quizId').equals(quizId).delete();
-                await db.quizzes.delete(quizId);
+            if (sessionId) {
+                await clearSessionLocalData(sessionId, removePending);
             } else {
-                await db.pendingSubmissions.clear();
-                await db.quizState.clear();
-                await db.questions.clear();
-                await db.quizzes.clear();
+                const sessions = await db.quizSessions.toArray();
+                for (const session of sessions) {
+                    await clearSessionLocalData(session.sessionId, removePending);
+                }
             }
-            await db.answers.clear();
         } catch (e) {
             console.warn('Failed to clear quiz data from IndexedDB:', e);
         }
@@ -54,6 +55,7 @@
             // Setup network listeners
             window.addEventListener('online', handleOnline);
             window.addEventListener('offline', handleOffline);
+            await cleanupAbandonedSessions();
 
             // Run initial real connectivity check
             isOnline = await checkRealOnlineStatus();
@@ -70,22 +72,35 @@
             }, 10000);
 
             // Check if there is an unsynced submission
-            const pending = await db.pendingSubmissions.where('synced').equals(0).toArray();
+            const pending = (await db.pendingSubmissions.where('synced').equals(0).toArray())
+                .filter((submission) => submission.tabId === tabId || submission.tabId === 'legacy');
             if (pending.length > 0) {
                 hasPendingSubmission = true;
                 activeQuizId = pending[0].quizId;
+                activeSessionId = pending[0].sessionId;
+                activeAttemptId = pending[0].attemptId;
+                activeAttemptToken = pending[0].attemptToken;
                 studentId = pending[0].studentId;
             } else {
                 // Check for active crash recovery session
-                const savedState = await db.quizState.toArray();
+                const savedState = [];
+                for (const state of await db.quizStates.toArray()) {
+                    const session = await db.quizSessions.get(state.sessionId);
+                    if (session && (session.tabId === tabId || session.tabId === 'legacy')) {
+                        savedState.push(state);
+                    }
+                }
                 if (savedState.length > 0) {
                     const state = savedState[0];
-                    const qCount = await db.questions.where('quizId').equals(state.quizId).count();
+                    const qCount = await db.sessionQuestions.where('sessionId').equals(state.sessionId).count();
                     if (qCount > 0) {
                         activeQuizId = state.quizId;
+                        activeSessionId = state.sessionId;
+                        activeAttemptId = session.attemptId;
+                        activeAttemptToken = session.attemptToken;
                         studentId = state.studentId;
                     } else {
-                        await db.quizState.clear();
+                        await clearSessionLocalData(state.sessionId);
                     }
                 }
             }
@@ -124,14 +139,24 @@
         const pending = await db.pendingSubmissions.where('synced').equals(0).toArray();
         for (const submission of pending) {
             try {
-                const response = await submitQuiz(submission.quizId, submission.studentId, submission.answers);
+                const response = await submitQuiz(
+                    submission.quizId,
+                    submission.studentId,
+                    submission.answers,
+                    {
+                        submissionId: submission.submissionId,
+                        sessionId: submission.sessionId,
+                        attemptId: submission.attemptId,
+                        attemptToken: submission.attemptToken
+                    }
+                );
                 
-                await db.pendingSubmissions.update(submission.id!, { synced: 1 });
-                await clearQuizLocalData(submission.quizId);
+                await db.pendingSubmissions.delete(submission.id!);
+                await clearQuizLocalData(submission.sessionId, false);
                 
                 isOnline = true;
                 
-                if (submission.quizId === activeQuizId && submission.studentId === studentId) {
+                if (submission.sessionId === activeSessionId) {
                     quizScore = response.score;
                     quizTotal = response.total;
                     hasPendingSubmission = false;
@@ -147,17 +172,24 @@
 
                 if (isEnded) {
                     // Quiz has ended on server - mark as synced, clean local DB completely, and notify student
-                    await db.pendingSubmissions.update(submission.id!, { synced: 1 });
-                    await clearQuizLocalData(submission.quizId);
+                    await db.pendingSubmissions.delete(submission.id!);
+                    await clearQuizLocalData(submission.sessionId, false);
 
-                    if (submission.quizId === activeQuizId && submission.studentId === studentId) {
+                    if (submission.sessionId === activeSessionId) {
                         hasPendingSubmission = false;
                         activeQuizId = null;
+                        activeSessionId = null;
+                        activeAttemptId = null;
+                        activeAttemptToken = null;
                         quizEndedNotice = {
                             message: error.message || 'This quiz has already ended. Submissions are no longer being accepted.'
                         };
                     }
                 } else {
+                    await db.pendingSubmissions.update(submission.id!, {
+                        lastAttemptAt: new Date().toISOString(),
+                        attemptCount: submission.attemptCount + 1
+                    });
                     isOnline = false;
                     console.warn('Sync waiting for connection.');
                 }
@@ -169,6 +201,7 @@
         currentRoomName = roomName;
         studentId = sId;
         activeQuizId = null;
+        activeSessionId = null;
         quizScore = null;
         quizTotal = null;
         hasPendingSubmission = false;
@@ -179,11 +212,14 @@
         if (!studentId) return;
 
         const data = await startQuiz(quizId, studentId);
+        const sessionId = createSessionId();
         const shuffledQuestions = shuffleArray(data.questions || []);
 
         const questionsToInsert = shuffledQuestions.map((q: any) => ({
-            id: q.id,
+            id: `${sessionId}:${q.id}`,
+            sessionId,
             quizId: data.quiz.id,
+            questionId: q.id,
             text: q.text,
             image: null,
             imageData: null,
@@ -194,19 +230,35 @@
             duration: Number(q.duration) || 60
         }));
 
-        await db.transaction('rw', db.quizzes, db.questions, async () => {
-            await db.quizzes.put({
-                id: data.quiz.id,
+        await db.transaction('rw', db.quizSessions, db.sessionQuizzes, db.sessionQuestions, async () => {
+            const now = new Date().toISOString();
+            await db.quizSessions.put({
+                sessionId,
+                tabId,
+                studentId,
+                quizId: data.quiz.id,
+                attemptId: data.attempt_id,
+                attemptToken: data.attempt_token,
+                createdAt: now,
+                lastSaved: now
+            });
+            await db.sessionQuizzes.put({
+                id: sessionId,
+                sessionId,
+                quizId: data.quiz.id,
                 title: data.quiz.title,
                 duration: data.quiz.duration,
                 start_datetime: data.quiz.start_datetime
             });
 
-            await db.questions.where('quizId').equals(data.quiz.id).delete();
-            await db.questions.bulkAdd(questionsToInsert);
+            await db.sessionQuestions.where('sessionId').equals(sessionId).delete();
+            await db.sessionQuestions.bulkAdd(questionsToInsert);
         });
 
         activeQuizId = quizId;
+        activeSessionId = sessionId;
+        activeAttemptId = data.attempt_id;
+        activeAttemptToken = data.attempt_token;
         quizScore = null;
         quizTotal = null;
         hasPendingSubmission = false;
@@ -214,10 +266,13 @@
     }
 
     async function handleLeaveRoom() {
-        await clearQuizLocalData(activeQuizId);
+        await clearQuizLocalData(activeSessionId);
         currentRoomName = null;
         studentId = null;
         activeQuizId = null;
+        activeSessionId = null;
+        activeAttemptId = null;
+        activeAttemptToken = null;
         quizScore = null;
         quizTotal = null;
         hasPendingSubmission = false;
@@ -237,6 +292,9 @@
     function handleQuizEnded(message: string) {
         hasPendingSubmission = false;
         activeQuizId = null;
+        activeSessionId = null;
+        activeAttemptId = null;
+        activeAttemptToken = null;
         quizEndedNotice = { message };
     }
 
@@ -244,6 +302,7 @@
         await clearQuizLocalData();
         currentRoomName = null;
         activeQuizId = null;
+        activeSessionId = null;
         studentId = null;
         quizScore = null;
         quizTotal = null;
@@ -432,9 +491,13 @@
                     {/if}
                 </div>
             </div>
-        {:else if activeQuizId && studentId}
+        {:else if activeQuizId && activeSessionId && studentId}
             <!-- Quiz Taking View -->
             <Quiz 
+                sessionId={activeSessionId!}
+                tabId={tabId}
+                attemptId={activeAttemptId!}
+                attemptToken={activeAttemptToken!}
                 quizId={activeQuizId} 
                 studentId={studentId} 
                 isOnline={isOnline} 
@@ -457,4 +520,3 @@
         {/if}
     </div>
 </main>
-

@@ -16,9 +16,6 @@
 - **Offline-Resilient Student Experience**  
   Built with **Svelte 5** and client-side IndexedDB (**Dexie.js**), active quiz state is cached locally in real time. If a student experiences an unexpected network drop or page reload, their progress and answered questions are preserved. Pending submissions are automatically queued and synced when reconnected.
 
-- **Exam Integrity & Anti-Cheating Alerts**  
-  Monitors active tab and window focus during quizzes. If a student leaves the quiz tab or switches windows, violation events are logged and email notifications are automatically dispatched to the instructor.
-
 - **Per-Question Countdown Timers**  
   Each question features its own dedicated countdown timer and strict client-server pacing, ensuring students cannot stall and exams progress smoothly.
 
@@ -37,7 +34,7 @@
 | **Instructor Dashboard** | Secure authentication, room management, quiz creation & question editor, image attachments, schedule management, instant manual start/stop. |
 | **Student Experience** | Fast single-page interface (Svelte), randomized question delivery, per-question timers, responsive UI on mobile & desktop. |
 | **Offline Architecture** | IndexedDB local storage (`Dexie.js`) for active quiz state, answer queue, and automatic background retry/sync. |
-| **Integrity & Security** | Tab-switch tracking, instructor violation email alerts, hidden answers on the client until grading. |
+| **Integrity & Security** | Hidden answers on the client until grading. |
 | **Results & Reporting** | Real-time leaderboards, performance distribution charts (`Chart.js`), student result review, and PDF report export (`DomPDF`). |
 
 ---
@@ -91,7 +88,7 @@ Ensure you have the following installed on your machine:
    DB_USERNAME=root
    DB_PASSWORD=
 
-   # Email settings for cheating violation alerts
+   # Email settings
    MAIL_MAILER=smtp
    MAIL_HOST=smtp.mailtrap.io
    MAIL_PORT=2525
@@ -129,4 +126,57 @@ The application is deployed and accessible at:
 
 ---
 
+## Docker Deployment
 
+Production images are built in CI and published to GitHub Container Registry. The
+Azure VM runs the image with `docker-compose.production.yml`, including a
+persistent MySQL container.
+
+On the VM, create `/var/www/quiz-app/.env` with the Laravel and MySQL settings:
+
+```env
+APP_ENV=production
+APP_DEBUG=false
+APP_URL=https://your-domain.example
+APP_KEY=base64:replace-with-a-production-key
+
+DB_CONNECTION=mysql
+DB_HOST=mysql
+DB_PORT=3306
+DB_DATABASE=quiz_app
+DB_USERNAME=quiz_app
+DB_PASSWORD=replace-with-a-secret
+
+MYSQL_DATABASE=quiz_app
+MYSQL_USER=quiz_app
+MYSQL_PASSWORD=replace-with-a-secret
+MYSQL_ROOT_PASSWORD=replace-with-a-different-secret
+
+MAIL_MAILER=log
+QUEUE_CONNECTION=database
+SESSION_DRIVER=database
+CACHE_STORE=database
+```
+
+The VM also needs Docker, the Compose plugin, and a GitHub Container Registry
+read token configured as `GHCR_USERNAME` and `GHCR_READ_TOKEN` in the deployment
+workflow secrets. The VM deploy directory should contain
+`docker-compose.production.yml`, `docker/`, and `.env`.
+
+The `DB_HOST=mysql` value is the Docker Compose service name. Laravel, the queue
+worker, and the scheduler reach MySQL over the private Compose network; MySQL is
+not exposed on a host port.
+
+The deployment performs these steps:
+
+```bash
+docker compose -f docker-compose.production.yml pull
+docker compose -f docker-compose.production.yml run --rm app php artisan migrate --force
+docker compose -f docker-compose.production.yml up -d --remove-orphans
+```
+
+Database data is stored in the `mysql_data` Docker volume, and uploaded files are
+stored in the `app_storage` Docker volume. Back up both volumes before treating
+the VM as the only copy of production data.
+
+---

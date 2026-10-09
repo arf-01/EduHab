@@ -6,11 +6,14 @@ use App\Http\Controllers\Controller;
 use App\Models\Quiz;
 use App\Models\Result;
 use App\Models\ResultDetail;
+use App\Models\QuizAttempt;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Illuminate\Database\QueryException;
 
 class QuizApiController extends Controller
 {
@@ -168,8 +171,48 @@ class QuizApiController extends Controller
             return response()->json(['error' => 'This quiz has already ended.'], 403);
         }
 
+        $attempt = DB::transaction(function () use ($studentId, $quizId, $now, $durationSeconds) {
+            $activeKey = "{$studentId}:{$quizId}";
+            $activeAttempt = QuizAttempt::where('active_key', $activeKey)
+                ->lockForUpdate()
+                ->first();
+
+            if ($activeAttempt && $activeAttempt->expires_at->isFuture()) {
+                return null;
+            }
+
+            if ($activeAttempt) {
+                $activeAttempt->update([
+                    'status' => 'expired',
+                    'active_key' => null,
+                ]);
+            }
+
+            return QuizAttempt::create([
+                'student_id' => $studentId,
+                'quiz_id' => $quizId,
+                'status' => 'active',
+                'active_key' => $activeKey,
+                'attempt_token' => Str::random(64),
+                'started_at' => $now,
+                'expires_at' => $now->copy()->addSeconds($durationSeconds),
+                'last_seen_at' => $now,
+            ]);
+        });
+
+        if (! $attempt) {
+            return response()->json([
+                'error' => 'This quiz is already active in another tab or device.',
+                'status' => 'already_active',
+            ], 409);
+        }
+
         return response()->json([
             'student_id' => $studentId,
+            'attempt_id' => $attempt->id,
+            'attempt_token' => $attempt->attempt_token,
+            'started_at' => $attempt->started_at->toIso8601String(),
+            'expires_at' => $attempt->expires_at->toIso8601String(),
             'quiz' => [
                 'id' => $quiz->id,
                 'title' => $quiz->title,
@@ -196,12 +239,78 @@ class QuizApiController extends Controller
         $request->validate([
             'quiz_id' => 'required|integer|exists:quizzes,id',
             'student_id' => 'required|string',
+            'attempt_id' => 'required|integer|exists:quiz_attempts,id',
+            'attempt_token' => 'required|string|size:64',
+            'submission_id' => 'required|uuid',
             'answers' => 'present|array',
         ]);
 
         $quizId = $request->quiz_id;
         $studentId = $request->student_id;
         $answers = $request->answers;
+        $submissionId = $request->submission_id;
+        $canonicalAnswers = $answers;
+        usort($canonicalAnswers, function (array $left, array $right): int {
+            return ((int) ($left['questionId'] ?? 0)) <=> ((int) ($right['questionId'] ?? 0));
+        });
+        $payloadHash = hash('sha256', json_encode([
+            'quiz_id' => $quizId,
+            'student_id' => $studentId,
+            'answers' => $canonicalAnswers,
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+        $attempt = QuizAttempt::whereKey($request->attempt_id)
+            ->where('quiz_id', $quizId)
+            ->where('student_id', $studentId)
+            ->where('attempt_token', $request->attempt_token)
+            ->first();
+
+        if (! $attempt) {
+            return response()->json([
+                'error' => 'Quiz attempt is invalid or does not belong to this student.',
+                'status' => 'invalid_attempt',
+            ], 403);
+        }
+
+        $existingSubmission = Result::where('submission_id', $submissionId)->first();
+
+        if ($existingSubmission) {
+            if ($existingSubmission->submission_payload_hash !== $payloadHash) {
+                return response()->json([
+                    'error' => 'This submission ID was already used with different answers.',
+                    'status' => 'submission_conflict',
+                ], 409);
+            }
+
+            $quiz = Quiz::withCount('questions')->findOrFail($existingSubmission->quiz_id);
+
+            return response()->json([
+                'message' => 'Submission already processed.',
+                'score' => $existingSubmission->score,
+                'total' => $quiz->questions_count,
+                'idempotent_replay' => true,
+            ]);
+        }
+
+        if ($attempt->status !== 'active') {
+            return response()->json([
+                'error' => 'This quiz attempt is no longer active.',
+                'status' => $attempt->status,
+            ], 409);
+        }
+
+        if ($attempt->expires_at->isPast()) {
+            $attempt->update([
+                'status' => 'expired',
+                'active_key' => null,
+            ]);
+
+            return response()->json([
+                'error' => 'This quiz attempt has expired.',
+                'status' => 'ended',
+                'quiz_ended' => true,
+            ], 403);
+        }
 
         // 1. Check for duplicate submission
         $start = microtime(true);
@@ -324,6 +433,8 @@ class QuizApiController extends Controller
             $result = Result::create([
                 'student_id' => $studentId,
                 'quiz_id' => $quizId,
+                'submission_id' => $submissionId,
+                'submission_payload_hash' => $payloadHash,
                 'score' => $score,
             ]);
 
@@ -340,6 +451,13 @@ class QuizApiController extends Controller
             $start = microtime(true);
 
             ResultDetail::insert($resultDetails);
+
+            $attempt->update([
+                'status' => 'submitted',
+                'active_key' => null,
+                'submitted_at' => Carbon::now(),
+                'last_seen_at' => Carbon::now(),
+            ]);
 
             $detailsInsertTime = (microtime(true) - $start) * 1000;
 
@@ -370,9 +488,44 @@ class QuizApiController extends Controller
                 'total' => count($quiz->questions),
             ]);
 
-        } catch (\Exception $e) {
+        } catch (QueryException $e) {
 
             DB::rollBack();
+
+            if ($e->getCode() === '23000') {
+                $raceResult = Result::where('submission_id', $submissionId)->first();
+
+                if ($raceResult) {
+                    if ($raceResult->submission_payload_hash !== $payloadHash) {
+                        return response()->json([
+                            'error' => 'This submission ID was already used with different answers.',
+                            'status' => 'submission_conflict',
+                        ], 409);
+                    }
+
+                    $quiz = Quiz::withCount('questions')->findOrFail($raceResult->quiz_id);
+
+                    return response()->json([
+                        'message' => 'Submission already processed.',
+                        'score' => $raceResult->score,
+                        'total' => $quiz->questions_count,
+                        'idempotent_replay' => true,
+                    ]);
+                }
+            }
+
+            return response()->json([
+                'error' => 'Failed to save submission. Please try again.',
+            ], 500);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            Log::error('SUBMIT - Unexpected submission failure', [
+                'quiz_id' => $quizId,
+                'student_id' => $studentId,
+                'submission_id' => $submissionId,
+                'exception' => $e,
+            ]);
 
             return response()->json([
                 'error' => 'Failed to save submission. Please try again.',

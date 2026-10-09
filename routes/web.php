@@ -7,12 +7,7 @@ use App\Http\Controllers\QuizExamController;
 use App\Http\Controllers\ResultController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\Schedule_Controller;
-use App\Mail\QuizViolationMail;
-use App\Models\Quiz;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Route;
 
 /////////////////////////
@@ -82,7 +77,6 @@ Route::get('/quiz/{id}/take', function () {
 Route::post('/quiz/{quiz}/submit/{student}', [QuizExamController::class, 'submitQuizAnswered'])->name('quiz.submit');
 Route::post('/quiz/startnow/{id}', [QuizExamController::class, 'startNow'])->name('quiz.startnow');
 Route::post('/quiz/endnow/{id}', [QuizExamController::class, 'endNow'])->name('quiz.endnow');
-Route::post('/quiz/violation', [QuizExamController::class, 'sendViolationEmail']);
 
 /////////////////////////
 Route::post('/store-result', [App\Http\Controllers\ResultController::class, 'storeResult'])->name('result.store');
@@ -96,27 +90,6 @@ Route::post('quiz/{id}/schedule', [Schedule_Controller::class, 'schedule'])->nam
 
 Route::get('/questions/edit/{id}', [QuestionControlller::class, 'edittoupdate'])->name('questions.edit');
 Route::put('/questions/update/{id}', [QuestionControlller::class, 'update'])->name('questions.update');
-
-Route::post('/report-tab-switch', function (Request $request) {
-    if ($request->state === 'hidden') {
-        $quiz = Quiz::with('teacher')->find($request->quiz_id);
-
-        if ($quiz && $quiz->teacher) {
-            $teacherEmail = $quiz->teacher->email;
-            $studentId = session('student_id');
-
-            // Send email using the Blade template via Mailable
-            Mail::to($teacherEmail)
-                ->send(new QuizViolationMail($studentId));
-
-            return response()->json(['status' => 'Email sent.']);
-        } else {
-            Log::warning('Quiz or teacher not found.');
-        }
-    }
-
-    return response()->json(['status' => 'Logged but no email sent.']);
-});
 
 Route::get('/password-reset', function () {
     return view('teacher.passwordreset');

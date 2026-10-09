@@ -1,5 +1,4 @@
 import './bootstrap';
-import '../css/app.css';
 import './flatpickr';
 import './CodeHighlighter';
 import './chart';
@@ -23,4 +22,3 @@ if (document.readyState === 'loading') {
 } else {
     initApp();
 }
-

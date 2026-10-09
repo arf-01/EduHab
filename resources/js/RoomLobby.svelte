@@ -66,15 +66,19 @@
                 const safeToClean = staleQuizIds.filter(id => !unsyncedQuizIds.has(id));
 
                 if (safeToClean.length > 0) {
-                    const staleState = await db.quizState
-                        .filter(s => safeToClean.includes(s.quizId))
+                    const staleSessions = await db.quizSessions
+                        .where('quizId')
+                        .anyOf(safeToClean)
                         .toArray();
                     
-                    if (staleState.length > 0) {
-                        await db.quizState.filter(s => safeToClean.includes(s.quizId)).delete();
-                        await db.answers.clear();
-                        for (const qid of safeToClean) {
-                            await db.questions.where('quizId').equals(qid).delete();
+                    for (const session of staleSessions) {
+                        const hasPending = unsyncedPending.some((submission) => submission.sessionId === session.sessionId);
+                        if (!hasPending) {
+                            await db.quizStates.where('sessionId').equals(session.sessionId).delete();
+                            await db.sessionAnswers.where('sessionId').equals(session.sessionId).delete();
+                            await db.sessionQuestions.where('sessionId').equals(session.sessionId).delete();
+                            await db.sessionQuizzes.delete(session.sessionId);
+                            await db.quizSessions.delete(session.sessionId);
                         }
                     }
                 }
@@ -94,7 +98,7 @@
 
         try {
             if (!isOnline && !navigator.onLine) {
-                const count = await db.questions.where('quizId').equals(quizId).count();
+                const count = await db.sessionQuestions.where('quizId').equals(quizId).count();
                 if (count === 0) {
                     error = 'You must be online when starting a quiz for the first time.';
                     startingQuizId = null;
