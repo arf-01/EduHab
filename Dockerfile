@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM composer:2 AS php-dependencies
+FROM composer:2.8 AS php-dependencies
 
 WORKDIR /app
 
