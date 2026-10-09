@@ -7,6 +7,7 @@ WORKDIR /app
 COPY composer.json composer.lock ./
 RUN composer install \
     --no-dev \
+    --no-scripts \
     --no-interaction \
     --no-progress \
     --prefer-dist \
@@ -73,6 +74,7 @@ RUN mkdir -p \
         storage/framework/views \
         storage/logs \
         bootstrap/cache \
+    && php artisan package:discover --ansi \
     && chown -R www-data:www-data storage bootstrap/cache public
 
 USER www-data
