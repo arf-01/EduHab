@@ -22,9 +22,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-
-        // URL::forceScheme('https');
-        // Uncomment above line for production deployment
+        if ($this->app->environment('production') &&
+            parse_url((string) config('app.url'), PHP_URL_SCHEME) === 'https') {
+            URL::forceScheme('https');
+        }
 
         Livewire::component('quiz-timer', QuizTimer::class);
     }
