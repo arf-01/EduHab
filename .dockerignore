@@ -16,6 +16,4 @@ storage/framework/views/*
 public/build
 public/sw.js
 public/workbox-*.js
-docker-compose*.yml
-Dockerfile
 README.md
