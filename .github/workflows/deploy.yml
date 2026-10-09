@@ -149,8 +149,18 @@ jobs:
               --username "${{ secrets.GHCR_USERNAME }}" --password-stdin
             docker compose -f docker-compose.production.yml pull
 
+            echo "==> Starting MySQL..."
+            docker compose -f docker-compose.production.yml up -d mysql
+
+            echo "==> Waiting for MySQL..."
+            until docker compose -f docker-compose.production.yml exec -T mysql \
+              sh -c 'mysqladmin ping -h localhost -u root -p"$MYSQL_ROOT_PASSWORD" --silent'
+            do
+              sleep 5
+            done
+
             echo "==> Running database migrations..."
-            docker compose -f docker-compose.production.yml run --rm app \
+            docker compose -f docker-compose.production.yml run --rm --no-deps app \
               php artisan migrate --force
 
             echo "==> Rebuilding application services..."
